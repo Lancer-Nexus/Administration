@@ -1,5 +1,7 @@
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
+app.Logger.LogWarning(
+    "Administration API is starting in skeleton mode: authorization, audit storage and command dispatch are not configured; readiness remains unavailable.");
 
 app.MapGet("/health/live", () => Results.Ok(new
 {
@@ -15,6 +17,11 @@ app.MapGet("/health/ready", () => Results.Problem(
 
 app.MapGet("/api/v1/admin", () => Results.Problem(
     title: "Administration API is not configured",
+    statusCode: StatusCodes.Status503ServiceUnavailable));
+
+app.MapPost("/api/v1/admin/commands", () => Results.Problem(
+    title: "Administration command dispatch is not configured",
+    detail: "Commands remain unavailable until Gateway identity, current authorization and audit storage are registered.",
     statusCode: StatusCodes.Status503ServiceUnavailable));
 
 app.Run();

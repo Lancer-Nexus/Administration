@@ -24,7 +24,7 @@ The service must not trust a client-provided admin flag or a shared chat passwor
 
 ## Current skeleton
 
-The .NET 10 ASP.NET Core host exposes `/health/live` and fails readiness closed at `/health/ready` until authorization, audit storage and command dispatch are wired. No administration command is implemented yet.
+The .NET 10 ASP.NET Core host exposes `/health/live` and fails readiness closed at `/health/ready` until authorization, audit storage and command dispatch are wired. The shared typed command envelope and closed initial command types are in place; the REST route remains unavailable until identity, authorization and audit services are registered.
 
 Build from the repository root with:
 
