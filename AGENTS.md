@@ -27,4 +27,10 @@ Never log passwords, tokens, JoinTickets or sensitive command payloads. Apply ra
 
 ## Build
 
-Use `LancerNexus.Administration.sln` with .NET 10. Keep readiness fail-closed until authorization and audit dependencies are active; do not add a permissive development admin path.
+Initialize the Protocol submodule. AdminQuery wire contracts belong in Protocol. Gateway attests current session/lease identity; Administration checks its separate Gateway service credential, normalized SQL permissions/scopes and durable audit. Retries must recompute current rights and fresh scoped status. Never cache authorized status across revocation. Supported queries are help/status/instances/instance. Permission mutations use the closed typed mutation schema and return pending until active instances acknowledge the committed revision. Report stale/unknown data, count capacity once per multi-system instance and keep connection counts distinct from online accounts.
+
+Use `LancerNexus.Administration.sln` with .NET 10. Keep readiness fail-closed until authorization, revision outbox and audit dependencies are active; do not add a permissive development admin path.
+
+The normalized SQL permission graph and shared evaluator replace legacy role authorization after migration 002. All mutations require `permissions.manage`, run in a transaction, validate the complete candidate inheritance graph, append audit/idempotency/outbox records, and publish a revision. Do not allow direct public access to Administration's service-key endpoints. Redis notices only trigger a full SQL snapshot reload; instance ACKs follow activation.
+
+Use [docs/permission-system.md](docs/permission-system.md) as the detailed reference for evaluation order, API boundaries, migrations, operations and known LLServer sync limitations. Keep it aligned whenever those contracts change.

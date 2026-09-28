@@ -5,4 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>LancerNexus.Administration</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../Protocol/src/LancerNexus.Protocol/LancerNexus.Protocol.csproj" />
+    <ProjectReference Include="../../../Cluster/src/LancerNexus.Cluster/LancerNexus.Cluster.csproj" />
+    <PackageReference Include="MySqlConnector" Version="2.6.2" />
+  </ItemGroup>
 </Project>
