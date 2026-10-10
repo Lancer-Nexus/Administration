@@ -200,7 +200,7 @@ public sealed class AdminActionSubmissionStore(IConfiguration configuration, Tim
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "INSERT INTO admin_action_outbox(command_id,payload_json,created_at_utc) VALUES (@id,CAST(@payload AS JSON),UTC_TIMESTAMP(6))";
+        command.CommandText = "INSERT INTO admin_action_outbox(command_id,payload_json,created_at_utc) VALUES (@id,@payload,UTC_TIMESTAMP(6))";
         command.Parameters.AddWithValue("@id", commandId.ToString("D"));
         command.Parameters.AddWithValue("@payload", payload);
         await command.ExecuteNonQueryAsync(cancellationToken);
