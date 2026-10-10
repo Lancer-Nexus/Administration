@@ -157,8 +157,9 @@ Die neun bisherigen Admin-Spielbefehle prüfen ihre eigene Permission über Gate
 | `command.spawnloot` | `/spawnloot <ausrüstung> <anzahl>` | Loot im Weltraum erzeugen | Inventar-/Wirtschaftswirkung |
 | `command.stop` | `/stop` | Eigenes Schiff anhalten | Begrenzte unmittelbare Spielwirkung |
 | `command.warp` | `/warp <x> <y> <z>` | Eigenes Schiff an Koordinaten versetzen | Positions-/Sicherheitsgrenzen prüfen |
+| `command.clusterjump` | `/clusterjump <system> <source gate>` | Den normalen Clustertransfer über ein angegebenes Sprungtor anfordern | Prüft Quelltor und Rückverbindung; Gateway/Coordinator autorisieren den Transfer |
 
-Die neun `command.*`-Knoten sind absichtlich einzeln und nicht als breite `command.*`-Grant-Vorlage zusammengefasst. Migration 003 legt sie als einzelne Grants für die Gruppe `operator` an, weist diese Gruppe aber keinem Konto automatisch zu. `/admin op <UUID> [global|instance]` und `/admin deop <UUID> [global|instance]` weisen die Gruppe zu beziehungsweise entfernen sie; dafür benötigt das ausführende Konto `permissions.manage`. Die Host-Konsole behält den getrennten lokalen Notfall-OP für Standalone-LLServer ohne Gateway. Die öffentlichen Diagnosebefehle `/help`, `/pos`, `/ping` und `/debug` benötigen keine Admin-Permission.
+Die `command.*`-Knoten sind absichtlich einzeln und nicht als breite `command.*`-Grant-Vorlage zusammengefasst. Migration 003 legt die bisherigen Grants für die Gruppe `operator` an; Migration 006 ergänzt `command.clusterjump`. Die Gruppe wird keinem Konto automatisch zugewiesen. `/admin op <UUID> [global|instance]` und `/admin deop <UUID> [global|instance]` weisen die Gruppe zu beziehungsweise entfernen sie; dafür benötigt das ausführende Konto `permissions.manage`. Die Host-Konsole behält den getrennten lokalen Notfall-OP für Standalone-LLServer ohne Gateway. Die öffentlichen Diagnosebefehle `/help`, `/pos`, `/ping` und `/debug` benötigen keine Admin-Permission.
 
 Der aktuelle Revisions-/Snapshot-ACK-Listener im LLServer bleibt ein eigener offener Synchronisationspunkt; er ist nicht Voraussetzung für die synchrone Freigabeprüfung pro Befehl. Eine fehlende oder veraltete zentrale Antwort berechtigt nie zur Ausführung.
 
@@ -386,8 +387,9 @@ Die Connection-String-Variablen werden ausschließlich in geschützten Environme
 3. `Administration/sql/002_permissions.sql` einmalig mit einem migrationsberechtigten Konto ausführen.
 4. `Administration/sql/003_command_operator_group.sql` einmalig ausführen. Es erstellt den nicht zugewiesenen `operator`-Grant und publiziert dafür eine neue Revision.
 5. `Administration/sql/004_permission_audit_decisions.sql` und danach `Administration/sql/005_admin_action_outbox.sql` einmalig ausführen. Ablehnungen wegen fehlendem `permissions.manage` werden zusammen mit Entscheidung, Grund und Ergebnis dauerhaft protokolliert; angenommene Spielaktionen landen atomar in der Action-Outbox.
-6. [Testdatenbank-Protokoll](permissions-testdb.md) als erwarteten Importzustand vergleichen. Der dokumentierte Testdatenbanklauf umfasst bislang Migration 002, nicht 003.
-7. Einen Owner kontrolliert mit einem globalen, direkten Exact-Allow für `permissions.manage` bootstrappen. Keine Migration erzeugt einen Owner:
+6. `Administration/sql/006_clusterjump_operator_permission.sql` einmalig ausführen. Es ergänzt den nicht zugewiesenen Operator-Grant für `/clusterjump` und publiziert eine neue Revision.
+7. [Testdatenbank-Protokoll](permissions-testdb.md) als erwarteten Importzustand vergleichen. Der dokumentierte Testdatenbanklauf umfasst bislang Migration 002, nicht 003.
+8. Einen Owner kontrolliert mit einem globalen, direkten Exact-Allow für `permissions.manage` bootstrappen. Keine Migration erzeugt einen Owner:
 
    ```sql
    SET @owner_account = '00000000-0000-0000-0000-000000000000';
