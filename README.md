@@ -24,13 +24,15 @@ The implemented service exposes `/health/live`, `/health/ready` and scoped statu
 
 The service must not trust a client-provided admin flag or a shared chat password. It uses Gateway-authenticated identity and current SQL authorization for every mutating command.
 
+Typed game actions are accepted internally at `POST /api/v1/admin/actions` with the Gateway service credential. Gateway forwards REST and in-game requests after validating the current session and, for player targets, resolving current lease and Coordinator placement context. Administration rechecks the current permission snapshot and target scopes, then atomically writes an idempotent pending command, JSON outbox item and decision audit. A `202 Pending` response means queued; it does not mean a game server executed the action. Gateway does not yet provide signed step-up evidence, so permanent bans and instance drain remain denied. The Coordinator/Agent/LLServer outbox consumer and execution-result path remain integration work.
+
 ## Implemented administration queries
 
 `/admin help`, `/admin status`, `/admin instances` and `/admin instance <ID>` are read-only commands. LLServer intercepts complete chat text before ordinary logging/broadcast and returns private console messages. Gateway checks the instance credential, admitted account/session and active character lease. Following a transfer it resolves the admitted transfer's session through Coordinator and checks the current lease again. Local game administrator flags and character names never grant rights.
 
 External clients send Protocol `AdminQuery` JSON to Gateway `POST /api/v1/admin/commands` with their Gateway access token. Gateway checks the current SQL session and attests identity over authenticated HTTPS. Both transports call `AdminQueryDispatcher`. Administration's endpoint with the same path is internal and accepts only the separate Gateway service credential; do not expose it publicly.
 
-Apply [sql/001_admin_queries.sql](sql/001_admin_queries.sql), then [sql/002_permissions.sql](sql/002_permissions.sql) explicitly against the shared Gateway/Administration MySQL database. The second migration creates the normalized permission graph, revision outbox, per-instance ACKs, audit and idempotency tables. It imports enabled legacy admin role assignments and permissions, then gives all existing accounts the empty `default` group. Legacy tables remain available for rollback; the service authorizes through the new permission graph.
+Apply [sql/001_admin_queries.sql](sql/001_admin_queries.sql), [sql/002_permissions.sql](sql/002_permissions.sql), [sql/003_command_operator_group.sql](sql/003_command_operator_group.sql), [sql/004_permission_audit_decisions.sql](sql/004_permission_audit_decisions.sql), and [sql/005_admin_action_outbox.sql](sql/005_admin_action_outbox.sql) explicitly in order against the shared Gateway/Administration MySQL database. The permission migrations create the normalized graph, revision outbox, per-instance ACKs, audit and idempotency tables. They import enabled legacy admin role assignments and permissions, then give all existing accounts the empty `default` group. Migration 004 adds explicit decision, reason and result fields to mutation audit records. Migration 005 adds pending typed-action commands, a transactional JSON outbox, and decision audit rows. Its outbox retains action payloads such as broadcast text until a consumer completes or removes them. Legacy tables remain available for rollback; the service authorizes through the new permission graph.
 
 The isolated local E2E database migration and idempotence check are recorded in [docs/permissions-testdb.md](docs/permissions-testdb.md).
 
@@ -78,7 +80,7 @@ SSL_CERT_FILE=<trusted internal CA PEM>
 
 Gateway needs `Gateway__AdministrationBaseUrl=https://localhost:38445` and `Gateway__AdministrationApiKey` matching `Administration__GatewayApiKey`. LLServer uses its existing LoginUrl and distinct instance key; standalone servers cannot query Administration. Never expose Administration's service-key endpoints directly to a browser or game client.
 
-Initialize the Protocol submodule before building. `/health/live` proves liveness. `/health/ready` checks SQL schema, service key configuration and Coordinator registry, returning 503 if missing. It does not prove game instance readiness or audit write permissions; commands check authorization and actual audit writes independently.
+Initialize the Protocol submodule before building. `/health/live` proves liveness. `/health/ready` checks SQL schema (including migration 005), service key configuration and Coordinator registry, returning 503 if missing. It does not prove game instance readiness or audit write permissions; commands check authorization and actual audit writes independently.
 
 Build from the repository root with:
 
@@ -87,3 +89,5 @@ dotnet restore LancerNexus.Administration.sln
 dotnet build LancerNexus.Administration.sln --configuration Release --no-restore
 dotnet test LancerNexus.Administration.sln --no-restore
 ```
+
+CI runs the permission mutation integration test against an ephemeral MySQL 8 service. To run it locally, set `LANCER_NEXUS_ADMINISTRATION_TEST_MYSQL` to a disposable MySQL connection string with permission to create and drop databases; the test applies both Administration migrations to a uniquely named database and removes it afterward. Without that variable, xUnit reports the integration test as skipped.

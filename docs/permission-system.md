@@ -67,11 +67,11 @@ sequenceDiagram
     Admin-->>Caller: 200 nach ACKs oder 202 sync_pending
 ```
 
-Der Ablauf ist das Zielverhalten der bereitgestellten Komponenten. Der Listener und Koordinator im Cluster-Projekt sind implementiert, werden aber derzeit noch nicht beim LLServer-Start instanziiert. Darum gibt es aus laufenden LLServer-Prozessen noch keine ACKs; Mutationen bleiben momentan `202 sync_pending`. Details dazu stehen in [Abschnitt 12](#12-bekannte-integrationsgrenzen).
+Der Ablauf ist das Zielverhalten der bereitgestellten Komponenten. Cluster-fähige LLServer-Builds instanziieren Listener und Koordinator beim Start und melden erst nach aktiver Redis-Subscription sowie geladenem, aktiviertem und bestätigtem SQL-Snapshot `IsReady=true`. Das bestätigt die Host-Integration; eine laufende Mehrdienst-E2E-Verteilung muss separat geprüft werden. Details zu den verbleibenden Grenzen stehen in [Abschnitt 12](#12-bekannte-integrationsgrenzen).
 
 ## 3. Datenmodell
 
-Migration [002_permissions.sql](../sql/002_permissions.sql) wird nach dem Gateway-Konto-/Lease-Schema und Administration-Migration `001_admin_queries.sql` auf derselben Datenbank ausgeführt. Danach seedet [003_command_operator_group.sql](../sql/003_command_operator_group.sql) einmalig die Gruppe `operator` mit den unten aufgeführten einzelnen Spielbefehl-Rechten. Die Gruppe wird keinem Konto automatisch zugewiesen.
+Migration [002_permissions.sql](../sql/002_permissions.sql) wird nach dem Gateway-Konto-/Lease-Schema und Administration-Migration `001_admin_queries.sql` auf derselben Datenbank ausgeführt. Danach seedet [003_command_operator_group.sql](../sql/003_command_operator_group.sql) einmalig die Gruppe `operator` mit den unten aufgeführten einzelnen Spielbefehl-Rechten. [004_permission_audit_decisions.sql](../sql/004_permission_audit_decisions.sql) ergänzt Entscheidung, Grund und Ergebnis im dauerhaften Mutation-Audit. [005_admin_action_outbox.sql](../sql/005_admin_action_outbox.sql) speichert autorisierte, idempotente Spielaktionen mit `pending`-Status und Outbox-Payload transaktional. Das Audit speichert keine Nachrichtentexte; der Outbox-Payload enthält sie bis zur Verarbeitung. Der Endpunkt bestätigt mit `202` nur die dauerhafte Aufnahme, nicht die Ausführung im Spiel. Die Gruppe wird keinem Konto automatisch zugewiesen.
 
 | Tabelle | Zweck |
 | --- | --- |
@@ -83,7 +83,7 @@ Migration [002_permissions.sql](../sql/002_permissions.sql) wird nach dem Gatewa
 | `permission_user_nodes` | Geordnete, optionale zeit- und bereichsbegrenzte Konto-Rechte |
 | `permission_outbox` | Dauerhafte, wiederholbare Revisionshinweise für Redis |
 | `permission_instance_ack` | Höchste aktivierte Revision und ACK-Zeitpunkt je Instanz |
-| `permission_audit` | Append-orientierte Aufzeichnung von Actor, Quelle, Ziel, Mutation und Revision |
+| `permission_audit` | Append-orientierte Aufzeichnung von Actor, Quelle, Ziel, Mutation, Revision, Entscheidung, Grund und Ergebnis |
 | `permission_mutation_keys` | Actor-begrenzte Idempotenz mit Payload-Fingerprint und Ergebnis |
 
 Konto-IDs referenzieren die bestehende Gateway-Tabelle `accounts`. Das alte Tabellenmodell (`admins`, `admin_role_assignments`, `admin_role_permissions`) bleibt beim Übergang bestehen. Migration 002 importiert aktivierte Admin-Zuweisungen als Gruppenmitgliedschaften und bestehende Rollenrechte als Gruppen-Knoten. Die Anwendung verwendet danach das neue Rechte-Modell.
@@ -220,6 +220,12 @@ transfer.move
 
 Rechte-Namen sollten nach Funktion und Risiko getrennt sein. Vergib keine breite Regel wie `*`/`**` an normale Spielergruppen. Für reine Statusabfragen genügen `admin.help`, `status.read` und `instance.read`; diese Rechte erteilen ausdrücklich kein `permissions.manage`.
 
+### Mutierende Protocol-Admin-Aktionen
+
+Die Administration-Policy ordnet `AdminActionRequestV1` den einzelnen Rechten `admin.message`, `player.kick`, `player.ban`, `player.unban`, `server.drain`, `transfer.move`, `transfer.start` und `player.teleport` zu. Aktionen an einem Spieler werden gegen dessen aktuelle Coordinator-Instanz und sein aktuelles System geprüft. `Move` und `Transfer` verlangen zusätzlich Berechtigungen im aufgelösten Ziel-Instanz-/Systemkontext; `Teleport` prüft das aktuelle Zielsystem. Nachrichten an alle und Account-Bans/Unbans verwenden globalen Kontext.
+
+Der Action-Request allein belegt weder die aktuelle Spielerposition noch Step-up. Die Policy verlangt deshalb für Spielerziele einen passenden Coordinator-Zielkontext und markiert permanente Bans sowie Drain als Step-up-pflichtig. Gateway attestiert Session und Zielauflösung an Administration; die belastbare Step-up-Attestierung ist noch offen. Der typisierte Administration-Endpunkt prüft aktuelle Rechte/Scopes und schreibt autorisierte Aktionen transaktional in die MySQL-Outbox. `202 Accepted` bestätigt ausschließlich diese dauerhafte Aufnahme. Ein Coordinator-/LLServer-Dispatcher, erneute Rechteprüfung am Ausführungsziel und ein Abschluss-/Ergebnisrückkanal sind noch nicht angeschlossen.
+
 ## 7. Änderungsablauf, Audit und Idempotenz
 
 Administration akzeptiert eine geschlossene typisierte Mutation. Beliebiger SQL-Text, Shell-Text oder Rohbefehle sind kein Bestandteil des API-Vertrags.
@@ -349,7 +355,7 @@ Der lokale Fallback wird nur geladen, wenn `LoginUrl` nicht gesetzt ist. Mit akt
 - Getrennter Gateway-Service-Schlüssel für interne Administration-Routen.
 - Interner Redis-TCP-Endpunkt für die Revisions-Outbox.
 - Pro Server ein eindeutiger Instanzschlüssel, über den Gateway die Instanz-ID ableitet.
-- Für laufenden Rights-Sync: der noch ausstehende LLServer-Host-Start des Cluster-Listeners.
+- Die LLServer-Integration bindet Host-Readiness an Subscription, SQL-Snapshot und ACK. Eine produktionsnahe Mehrdienst-E2E-Prüfung mit Gateway, Administration, Redis und mehreren Instanzen bleibt offen.
 
 ### Konfiguration
 
@@ -379,8 +385,9 @@ Die Connection-String-Variablen werden ausschließlich in geschützten Environme
 2. Gateway-Identitäts-/Lease-Schema und Administration `001_admin_queries.sql` prüfen.
 3. `Administration/sql/002_permissions.sql` einmalig mit einem migrationsberechtigten Konto ausführen.
 4. `Administration/sql/003_command_operator_group.sql` einmalig ausführen. Es erstellt den nicht zugewiesenen `operator`-Grant und publiziert dafür eine neue Revision.
-5. [Testdatenbank-Protokoll](permissions-testdb.md) als erwarteten Importzustand vergleichen. Der dokumentierte Testdatenbanklauf umfasst bislang Migration 002, nicht 003.
-6. Einen Owner kontrolliert mit einem globalen, direkten Exact-Allow für `permissions.manage` bootstrappen. Keine Migration erzeugt einen Owner:
+5. `Administration/sql/004_permission_audit_decisions.sql` und danach `Administration/sql/005_admin_action_outbox.sql` einmalig ausführen. Ablehnungen wegen fehlendem `permissions.manage` werden zusammen mit Entscheidung, Grund und Ergebnis dauerhaft protokolliert; angenommene Spielaktionen landen atomar in der Action-Outbox.
+6. [Testdatenbank-Protokoll](permissions-testdb.md) als erwarteten Importzustand vergleichen. Der dokumentierte Testdatenbanklauf umfasst bislang Migration 002, nicht 003.
+7. Einen Owner kontrolliert mit einem globalen, direkten Exact-Allow für `permissions.manage` bootstrappen. Keine Migration erzeugt einen Owner:
 
    ```sql
    SET @owner_account = '00000000-0000-0000-0000-000000000000';
@@ -422,13 +429,13 @@ Ein `202` ist kein Rollback: Die SQL-Änderung ist committet und wird nicht auto
 
 Die folgenden Punkte sind **noch nicht produktionsfertig**:
 
-1. LLServer erstellt derzeit weder `PermissionSyncCoordinator` noch `RedisPermissionRevisionListener` beim Cluster-Start und überwacht deren `IsReady` nicht. Deshalb ACKt keine echte LLServer-Instanz die neue Revision; die API bleibt typischerweise bei `202 sync_pending`.
+1. Cluster-fähige LLServer-Builds erstellen `PermissionSyncCoordinator` und `RedisPermissionRevisionListener` beim Start. Readiness bleibt bis zur Snapshot-Aktivierung und Revision-ACK sowie während eines Redis-Ausfalls `false`. Ein erfolgreicher lokaler Build beweist noch keine erfolgreiche Mehrdienst-Live-Verteilung.
 2. Administration referenziert `Cluster` per Projektpfad, der im gemeinsamen Workspace funktioniert. Für voneinander unabhängige Repository-/CI-Builds muss das Cluster-Projekt als versioniertes Paket veröffentlicht und in Administration sowie später LLServer fest versioniert werden.
 3. Die Ingame-Befehle ändern zentrale Rechte und verlassen sich auf Administration als Autorität. Eine Weboberfläche und ein versioniertes OpenAPI-/DTO-Paket für vollständige Gruppenpflege sind noch nicht erstellt.
 4. Die Revisions-Outbox und ACK-Tabellen wurden in der lokalen Testdatenbank geprüft, aber Redis-Publish, HTTPS-Relay, Live-Mutation, Revocation während einer Session und Offline-Instanz-Aufholung wurden noch nicht als E2E-Lauf getestet.
 5. Der lokale OP-Fallback ist implementiert als Client-Patch; sein Verhalten wurde nicht mit einer neu gestarteten isolierten LLServer-Instanz im laufenden Betrieb abgenommen.
 
-Diese Punkte sind in der übergreifenden [TODO-Liste](../../TODO.md) nachzuhalten. Bis zur Implementierung der Punkte 1 und 2 darf `sync_pending` nicht als erfolgreiche Live-Verteilung an alle Game-Server interpretiert werden.
+Diese Punkte sind in der übergreifenden [TODO-Liste](../../TODO.md) nachzuhalten. `sync_pending` darf nicht als erfolgreiche Live-Verteilung an alle Game-Server interpretiert werden; dafür ist weiterhin eine erfolgreiche Mehrdienst-E2E-Prüfung erforderlich.
 
 ## 13. Sicherheit und Betriebshygiene
 

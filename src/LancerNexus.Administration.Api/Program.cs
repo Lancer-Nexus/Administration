@@ -10,6 +10,7 @@ builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<MySqlAdminQueryStore>();
 builder.Services.AddSingleton<IAdminQueryStore>(s => s.GetRequiredService<MySqlAdminQueryStore>());
 builder.Services.AddSingleton<PermissionManagementStore>();
+builder.Services.AddSingleton<AdminActionSubmissionStore>();
 builder.Services.AddHostedService<PermissionRevisionPublisher>();
 builder.Services.AddHttpClient<IClusterStatusSource, CoordinatorStatusSource>(http => http.Timeout = TimeSpan.FromSeconds(5))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -17,7 +18,7 @@ builder.Services.AddTransient<AdminQueryDispatcher>();
 var app = builder.Build();
 app.Logger.LogInformation("Administration service starting; SQL permissions, audit and Coordinator readiness are checked dynamically.");
 app.MapGet("/health/live", () => Results.Ok(new { status = "live", service = "administration" }));
-app.MapGet("/health/ready", async (MySqlAdminQueryStore store, IClusterStatusSource source, CancellationToken ct) =>
+app.MapGet("/health/ready", async (MySqlAdminQueryStore store, AdminActionSubmissionStore actions, IClusterStatusSource source, CancellationToken ct) =>
 {
     try
     {
@@ -26,6 +27,7 @@ app.MapGet("/health/ready", async (MySqlAdminQueryStore store, IClusterStatusSou
             return Results.StatusCode(503);
         await store.CheckReadyAsync(ct);
         await app.Services.GetRequiredService<PermissionManagementStore>().CheckReadyAsync(ct);
+        await actions.CheckReadyAsync(ct);
         await source.ReadAsync(ct);
         return Results.Ok(new { status = "ready" });
     }
@@ -85,9 +87,6 @@ app.MapPost("/api/v1/admin/permissions/mutations", async (AuthorizedPermissionMu
     {
         var mutation = request.Mutation;
         if (request.ActorAccountId == Guid.Empty || mutation is null) return Results.BadRequest();
-        var authorized = await permissions.HasPermissionAsync(request.ActorAccountId, "permissions.manage",
-            mutation.InstanceId, mutation.SystemId, ct);
-        if (!authorized) return Results.Forbid();
         var result = await permissions.MutateAsync(request, ct);
         if (result.Status != "sync_pending" || result.Revision is not long revision)
             return Results.Json(result, statusCode: result.Status switch
@@ -120,15 +119,40 @@ app.MapPost("/api/v1/admin/commands", async (AuthorizedAdminQueryRequest request
     HttpContext context, AdminQueryDispatcher dispatcher, CancellationToken ct) =>
 {
     context.Response.Headers.CacheControl = "no-store";
-    var expected = app.Configuration["Administration:GatewayApiKey"];
-    var authorization = context.Request.Headers.Authorization.ToString();
-    if (expected is not { Length: >= 32 } || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
-        authorization.Length > 1024 || !CryptographicOperations.FixedTimeEquals(
-            SHA256.HashData(Encoding.UTF8.GetBytes(expected)), SHA256.HashData(Encoding.UTF8.GetBytes(authorization[7..]))))
+    if (!ServiceCredential.HasGatewayServiceCredential(context.Request,
+            app.Configuration["Administration:GatewayApiKey"]))
         return Results.Unauthorized();
     var result = await dispatcher.DispatchAsync(request, ct);
     return Results.Json(result, statusCode: result.Status switch
     { "denied" => 403, "invalid" => 400, "conflict" => 409, "unavailable" => 503, "not_found" => 404, _ => 200 });
+});
+
+app.MapPost("/api/v1/admin/actions", async (AuthorizedAdminActionSubmission request,
+    HttpContext context, AdminActionSubmissionStore actions, CancellationToken ct) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!ServiceCredential.HasGatewayServiceCredential(context.Request,
+            app.Configuration["Administration:GatewayApiKey"]))
+        return Results.Unauthorized();
+    if (request is null || request.Action is null || request.GatewaySessionId == Guid.Empty ||
+        !request.Action.IsValid()) return Results.BadRequest();
+    try
+    {
+        var result = await actions.SubmitAsync(request, ct);
+        return Results.Json(result, statusCode: result.Status switch
+        {
+            AdminActionStatus.Pending => 202,
+            AdminActionStatus.Denied => 403,
+            AdminActionStatus.Invalid => 400,
+            AdminActionStatus.Conflict => 409,
+            AdminActionStatus.Unavailable => 503,
+            AdminActionStatus.NotFound => 404,
+            _ => 202
+        });
+    }
+    catch (Exception e) when (e is MySqlConnector.MySqlException or InvalidOperationException or
+        ArgumentException or OperationCanceledException)
+    { return Results.StatusCode(503); }
 });
 app.Run();
 public partial class Program;

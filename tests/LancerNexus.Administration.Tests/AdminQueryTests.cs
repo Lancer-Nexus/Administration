@@ -8,8 +8,18 @@ public sealed class AdminQueryTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.UtcNow;
     private static AuthorizedAdminQueryRequest Request(AdminQueryKind kind = AdminQueryKind.Instances, string? target = null) =>
-        new() { AccountId = Guid.NewGuid(), Source = "ingame:li-01", Query = new AdminQuery {
-            CorrelationId = Guid.NewGuid(), IdempotencyKey = "test", Kind = kind, TargetInstanceId = target } };
+        new()
+        {
+            AccountId = Guid.NewGuid(),
+            Source = "ingame:li-01",
+            Query = new AdminQuery
+            {
+                CorrelationId = Guid.NewGuid(),
+                IdempotencyKey = "test",
+                Kind = kind,
+                TargetInstanceId = target
+            }
+        };
     private static ClusterInstance Instance(string id, int age = 0) =>
         new(id, "li01", ["li01", "li02"], true, false, true, true, 3, 1, 200, Now.AddSeconds(-age));
 
@@ -95,13 +105,31 @@ public sealed class AdminQueryTests
         Assert.Equal("unavailable", store.Audited);
     }
 
+    [Fact]
+    public async Task CallerCancellationPropagatesWithoutAttemptingAnAuditWrite()
+    {
+        var store = new Store(["*"]);
+        var dispatcher = new AdminQueryDispatcher(store, new Source([Instance("li-01")]), new Clock());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            dispatcher.DispatchAsync(Request(), cancellation.Token));
+
+        Assert.Null(store.Audited);
+    }
+
     private sealed class Clock : TimeProvider { public override DateTimeOffset GetUtcNow() => Now; }
     private sealed class Store(string[] scopes) : IAdminQueryStore
     {
         public string[] Scopes = scopes;
         public bool FailAudit, Conflict;
         public string? Audited;
-        public Task<string[]> GetScopesAsync(Guid actor, string permission, CancellationToken ct) => Task.FromResult(Scopes);
+        public Task<string[]> GetScopesAsync(Guid actor, string permission, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(Scopes);
+        }
         public Task<bool> AuditAsync(AuthorizedAdminQueryRequest request, string result, CancellationToken ct)
         {
             if (FailAudit) throw new InvalidOperationException("Audit unavailable");

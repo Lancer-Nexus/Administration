@@ -10,6 +10,20 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: administration-test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -padministration-test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      LANCER_NEXUS_ADMINISTRATION_TEST_MYSQL: Server=127.0.0.1;Port=3306;User ID=root;Password=administration-test;Database=mysql
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,5 +32,5 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore LancerNexus.Administration.sln
-      - run: dotnet build LancerNexus.Administration.sln --configuration Release --no-restore
+      - run: dotnet build LancerNexus.Administration.sln --configuration Release --no-restore --warnaserror
       - run: dotnet test LancerNexus.Administration.sln --configuration Release --no-build --verbosity normal

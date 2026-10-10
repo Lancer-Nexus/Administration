@@ -80,9 +80,14 @@ public sealed class AdminQueryDispatcher(IAdminQueryStore store, IClusterStatusS
                         instances = instances.Where(i => i.InstanceId == query.TargetInstanceId).ToArray();
                     result = instances.Length == 0
                         ? Reply(query.CorrelationId, "not_found", "Keine passende registrierte Instanz im berechtigten Bereich.")
-                        : new AdminQueryResponse { CorrelationId = query.CorrelationId, Status = "ok",
+                        : new AdminQueryResponse
+                        {
+                            CorrelationId = query.CorrelationId,
+                            Status = "ok",
                             Lines = instances.Take(64).Select(i => Format(i, now))
-                                .Append(instances.Length > 64 ? "Weitere Instanzen: /admin instance <ID>." : $"Stand: {now:O}").ToArray() };
+                                .Append(instances.Length > 64 ? "Weitere Instanzen: /admin instance <ID>." : $"Stand: {now:O}")
+                                .ToArray()
+                        };
                 }
             }
             // Never expose status before the durable audit succeeds. Replays get fresh permissions and data.
@@ -90,12 +95,16 @@ public sealed class AdminQueryDispatcher(IAdminQueryStore store, IClusterStatusS
                 return Reply(query.CorrelationId, "conflict", "Idempotenzschlüssel wurde für einen anderen Befehl verwendet.");
             return result;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception exception) when (exception is MySqlConnector.MySqlException or HttpRequestException or
             InvalidOperationException or InvalidDataException or System.Text.Json.JsonException or OperationCanceledException)
         {
             try { await store.AuditAsync(request, "unavailable", ct); }
             catch (Exception e) when (e is MySqlConnector.MySqlException or InvalidOperationException or OperationCanceledException) { }
-            return Reply(query.CorrelationId, "unavailable", "Administration/Clusterstatus derzeit nicht verfügbar (Datenquelle oder Audit)." );
+            return Reply(query.CorrelationId, "unavailable", "Administration/Clusterstatus derzeit nicht verfügbar (Datenquelle oder Audit).");
         }
     }
 

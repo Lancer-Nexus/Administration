@@ -101,6 +101,8 @@ public sealed class PermissionManagementStore(IConfiguration configuration, Time
 
     public async Task<bool> AreAcknowledgedAsync(long revision, IReadOnlyCollection<string> activeInstances, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(activeInstances);
+        if (revision < 0) return false;
         if (activeInstances.Count == 0) return true;
         await using var connection = Connection(); await connection.OpenAsync(ct);
         await using var command = connection.CreateCommand();
@@ -136,7 +138,12 @@ public sealed class PermissionManagementStore(IConfiguration configuration, Time
             var currentSnapshot = await ReadSnapshotAsync(connection, tx, ct);
             if (!new PermissionService(currentSnapshot).HasPermission(request.ActorAccountId, "permissions.manage",
                     new PermissionContext(request.Mutation.InstanceId, request.Mutation.SystemId), clock.GetUtcNow()))
+            {
+                await InsertMutationAuditAsync(connection, tx, request, currentSnapshot.Revision,
+                    "denied", "permissions.manage_missing", "denied", ct);
+                await tx.CommitAsync(ct);
                 return new("denied");
+            }
 
             await using (var existing = connection.CreateCommand())
             {
@@ -156,7 +163,8 @@ public sealed class PermissionManagementStore(IConfiguration configuration, Time
             }
             await ApplyMutationAsync(connection, tx, request.Mutation, ct);
             // Validate the complete candidate graph and every matcher before committing any change.
-            _ = await ReadSnapshotAsync(connection, tx, ct);
+            try { _ = await ReadSnapshotAsync(connection, tx, ct); }
+            catch (ArgumentException) { throw new PermissionMutationConflictException(); }
             await using (var bump = connection.CreateCommand())
             {
                 bump.Transaction = tx;
@@ -178,18 +186,8 @@ public sealed class PermissionManagementStore(IConfiguration configuration, Time
                 key.Parameters.AddWithValue("@actor", request.ActorAccountId.ToString()); key.Parameters.AddWithValue("@key", request.IdempotencyKey);
                 key.Parameters.AddWithValue("@fingerprint", fingerprint); key.Parameters.AddWithValue("@revision", revision);
                 await key.ExecuteNonQueryAsync(ct);
-                await using var audit = connection.CreateCommand();
-                audit.Transaction = tx;
-                audit.CommandText = "INSERT INTO permission_audit(created_at_utc, actor_account_id, correlation_id, source, idempotency_key, mutation_kind, target, revision) VALUES (@at,@actor,@correlation,@source,@key,@kind,@target,@revision)";
-                audit.Parameters.AddWithValue("@at", clock.GetUtcNow().UtcDateTime);
-                audit.Parameters.AddWithValue("@actor", request.ActorAccountId.ToString());
-                audit.Parameters.AddWithValue("@correlation", request.CorrelationId.ToString());
-                audit.Parameters.AddWithValue("@source", request.Source);
-                audit.Parameters.AddWithValue("@key", request.IdempotencyKey);
-                audit.Parameters.AddWithValue("@kind", request.Mutation.Kind.ToString());
-                audit.Parameters.AddWithValue("@target", request.Mutation.GroupName ?? request.Mutation.AccountId?.ToString());
-                audit.Parameters.AddWithValue("@revision", revision);
-                await audit.ExecuteNonQueryAsync(ct);
+                await InsertMutationAuditAsync(connection, tx, request, revision,
+                    "allowed", "authorized", "sync_pending", ct);
                 await tx.CommitAsync(ct);
                 return new("sync_pending", revision);
             }
@@ -216,12 +214,17 @@ public sealed class PermissionManagementStore(IConfiguration configuration, Time
         _ = await LoadSnapshotAsync(ct);
         await using var connection = Connection();
         await connection.OpenAsync(ct);
+        await using (var auditSchema = connection.CreateCommand())
+        {
+            auditSchema.CommandText = "SELECT decision, reason, result FROM permission_audit LIMIT 0";
+            await using var reader = await auditSchema.ExecuteReaderAsync(ct);
+        }
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT revision FROM permission_state WHERE singleton_id = 1";
         if (await command.ExecuteScalarAsync(ct) is null) throw new InvalidOperationException("Permission revision state is missing.");
     }
 
-    private static async Task<PermissionSnapshot> ReadSnapshotAsync(MySqlConnection connection,
+    internal static async Task<PermissionSnapshot> ReadSnapshotAsync(MySqlConnection connection,
         MySqlTransaction? tx, CancellationToken ct)
     {
         var groups = new Dictionary<string, GroupBuilder>(StringComparer.OrdinalIgnoreCase);
@@ -421,8 +424,31 @@ public sealed class PermissionManagementStore(IConfiguration configuration, Time
         c.Parameters.AddWithValue("@account", m.AccountId!.Value.ToString()); c.Parameters.AddWithValue("@pattern", m.Pattern!);
         c.Parameters.AddWithValue("@instance", (object?)m.InstanceId ?? DBNull.Value); c.Parameters.AddWithValue("@system", (object?)m.SystemId ?? DBNull.Value);
     }
+
+    private async Task InsertMutationAuditAsync(MySqlConnection connection, MySqlTransaction tx,
+        AuthorizedPermissionMutation request, long revision, string decision, string reason, string result,
+        CancellationToken ct)
+    {
+        await using var audit = connection.CreateCommand();
+        audit.Transaction = tx;
+        audit.CommandText = "INSERT INTO permission_audit(created_at_utc, actor_account_id, correlation_id, source, idempotency_key, mutation_kind, target, revision, decision, reason, result) VALUES (@at,@actor,@correlation,@source,@key,@kind,@target,@revision,@decision,@reason,@result)";
+        audit.Parameters.AddWithValue("@at", clock.GetUtcNow().UtcDateTime);
+        audit.Parameters.AddWithValue("@actor", request.ActorAccountId.ToString());
+        audit.Parameters.AddWithValue("@correlation", request.CorrelationId.ToString());
+        audit.Parameters.AddWithValue("@source", request.Source);
+        audit.Parameters.AddWithValue("@key", request.IdempotencyKey);
+        audit.Parameters.AddWithValue("@kind", request.Mutation.Kind.ToString());
+        audit.Parameters.AddWithValue("@target", request.Mutation.GroupName ?? request.Mutation.AccountId?.ToString());
+        audit.Parameters.AddWithValue("@revision", revision);
+        audit.Parameters.AddWithValue("@decision", decision);
+        audit.Parameters.AddWithValue("@reason", reason);
+        audit.Parameters.AddWithValue("@result", result);
+        await audit.ExecuteNonQueryAsync(ct);
+    }
+
     private static bool Valid(AuthorizedPermissionMutation r)
     {
+        if (r is null || r.Mutation is null) return false;
         var m = r.Mutation;
         if (r.ActorAccountId == Guid.Empty || r.CorrelationId == Guid.Empty || r.IdempotencyKey is not { Length: > 0 and <= 96 } ||
             r.Source is not { Length: > 0 and <= 128 } || !Enum.IsDefined(m.Kind)) return false;

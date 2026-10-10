@@ -10,4 +10,7 @@
     <ProjectReference Include="../../../Cluster/src/LancerNexus.Cluster/LancerNexus.Cluster.csproj" />
     <PackageReference Include="MySqlConnector" Version="2.6.2" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LancerNexus.Administration.Tests" />
+  </ItemGroup>
 </Project>

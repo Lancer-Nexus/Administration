@@ -1,0 +1,65 @@
+CREATE TABLE admin_action_commands (
+    command_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    operation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    actor_account_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    gateway_session_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    correlation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    source VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    idempotency_key VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    payload_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    action_kind TINYINT UNSIGNED NOT NULL,
+    target_kind TINYINT UNSIGNED NOT NULL,
+    permission_name VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    target_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    target_instance_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    target_system_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    destination_instance_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    destination_system_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    queue_sequence BIGINT NOT NULL AUTO_INCREMENT,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
+    created_at_utc DATETIME(6) NOT NULL,
+    PRIMARY KEY (command_id),
+    UNIQUE KEY uq_admin_action_operation (operation_id),
+    UNIQUE KEY uq_admin_action_sequence (queue_sequence),
+    UNIQUE KEY uq_admin_action_actor_idempotency (actor_account_id, idempotency_key),
+    KEY ix_admin_action_target_instance (target_instance_id, queue_sequence),
+    CONSTRAINT chk_admin_action_kind CHECK (action_kind BETWEEN 1 AND 8),
+    CONSTRAINT chk_admin_action_target_kind CHECK (target_kind BETWEEN 1 AND 6),
+    CONSTRAINT chk_admin_action_status CHECK (status IN ('pending', 'completed', 'denied', 'invalid', 'not_found', 'conflict', 'unavailable'))
+) ENGINE=InnoDB;
+
+CREATE TABLE admin_action_outbox (
+    command_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    payload_json JSON NOT NULL,
+    created_at_utc DATETIME(6) NOT NULL,
+    claimed_at_utc DATETIME(6) NULL,
+    completed_at_utc DATETIME(6) NULL,
+    CONSTRAINT fk_admin_action_outbox_command FOREIGN KEY (command_id)
+        REFERENCES admin_action_commands(command_id) ON DELETE CASCADE,
+    KEY ix_admin_action_outbox_claim (completed_at_utc, claimed_at_utc, created_at_utc)
+) ENGINE=InnoDB;
+
+CREATE TABLE admin_action_audit (
+    audit_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    created_at_utc DATETIME(6) NOT NULL,
+    command_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    actor_account_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    gateway_session_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    correlation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    source VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    idempotency_key VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    action_kind TINYINT UNSIGNED NOT NULL,
+    target_kind TINYINT UNSIGNED NOT NULL,
+    permission_name VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    target_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    target_instance_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    target_system_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    destination_instance_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    destination_system_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    decision VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    reason VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    result_status TINYINT UNSIGNED NOT NULL,
+    KEY ix_admin_action_audit_actor_time (actor_account_id, created_at_utc),
+    KEY ix_admin_action_audit_command (command_id, created_at_utc),
+    CONSTRAINT chk_admin_action_audit_decision CHECK (decision IN ('allowed', 'denied', 'conflict', 'unavailable'))
+) ENGINE=InnoDB;
