@@ -70,10 +70,20 @@ public sealed class AdminQueryDispatcher(IAdminQueryStore store, IClusterStatusS
                     scopes.Contains(i.InstanceId, StringComparer.Ordinal)).OrderBy(i => i.InstanceId).ToArray();
                 var now = clock.GetUtcNow();
                 if (query.Kind == AdminQueryKind.Status)
+                {
+                    var freshInstances = instances.Where(i => HasFreshHeartbeat(i, now)).ToArray();
+                    var connectionLine = freshInstances.Length == 0
+                        ? "Spielverbindungen: unbekannt (kein frischer Coordinator-Heartbeat)."
+                        : $"Aktive Spielverbindungen laut frischen Coordinator-Heartbeats: " +
+                          $"{freshInstances.Sum(i => (long)i.CurrentPlayers)}; " +
+                          $"Datenfrische: {freshInstances.Length}/{instances.Length} Instanzen; " +
+                          "nicht nach Konten oder Charakteren dedupliziert.";
                     result = Reply(query.CorrelationId, "ok", $"Clusterstatus ({now:O}, zugewiesener Bereich):",
                         $"Instanzen: {instances.Length}, bereit: {instances.Count(i => State(i, now) == "ready")}, " +
                         $"Kapazität: {instances.Where(i => State(i, now) is "ready" or "full").Sum(i => (long)i.MaxPlayers)}",
-                        "Online-Spieler: unbekannt (keine zentrale Presence-Quelle). MySQL: verfügbar; Coordinator: erreichbar.");
+                        connectionLine,
+                        "MySQL: verfügbar; Coordinator: erreichbar.");
+                }
                 else
                 {
                     if (query.Kind == AdminQueryKind.Instance)
@@ -110,9 +120,13 @@ public sealed class AdminQueryDispatcher(IAdminQueryStore store, IClusterStatusS
 
     public static string State(ClusterInstance i, DateTimeOffset now) =>
         i.LastHeartbeatUtc > now.AddSeconds(5) ? "unknown" :
-        !i.IsAlive || !i.AgentIsAlive || now - i.LastHeartbeatUtc > TimeSpan.FromSeconds(15) ? "stale" :
+        !HasFreshHeartbeat(i, now) ? "stale" :
         i.IsDraining ? "draining" : !i.IsReady ? "unavailable" :
         (long)i.CurrentPlayers + i.ReservedPlayers >= i.MaxPlayers ? "full" : "ready";
+
+    private static bool HasFreshHeartbeat(ClusterInstance i, DateTimeOffset now) =>
+        i.IsAlive && i.AgentIsAlive && i.LastHeartbeatUtc <= now.AddSeconds(5) &&
+        now - i.LastHeartbeatUtc <= TimeSpan.FromSeconds(15);
 
     private static string Format(ClusterInstance i, DateTimeOffset now) =>
         $"{i.InstanceId}: {State(i, now)}; Verbindungen {i.CurrentPlayers}/{i.MaxPlayers}, reserviert {i.ReservedPlayers}; " +

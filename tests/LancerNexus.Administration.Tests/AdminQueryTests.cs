@@ -60,7 +60,18 @@ public sealed class AdminQueryTests
             new Source([Instance("li-01"), Instance("ku-01", 16)]), new Clock())
             .DispatchAsync(Request(AdminQueryKind.Status), default);
         Assert.Contains(response.Lines, l => l.Contains("Kapazität: 200"));
-        Assert.Contains(response.Lines, l => l.Contains("Online-Spieler: unbekannt"));
+        Assert.Contains(response.Lines, l => l.Contains(
+            "Aktive Spielverbindungen laut frischen Coordinator-Heartbeats: 3; Datenfrische: 1/2 Instanzen; " +
+            "nicht nach Konten oder Charakteren dedupliziert."));
+    }
+
+    [Fact]
+    public async Task StatusReportsUnknownWhenNoInstanceHeartbeatIsFresh()
+    {
+        var response = await new AdminQueryDispatcher(new Store(["*"]),
+            new Source([Instance("li-01", 16)]), new Clock()).DispatchAsync(Request(AdminQueryKind.Status), default);
+        Assert.Contains(response.Lines, l => l.Contains(
+            "Spielverbindungen: unbekannt (kein frischer Coordinator-Heartbeat)."));
     }
 
     [Fact]

@@ -10,13 +10,14 @@ The full data model, evaluation order, scopes, API routes, migration/bootstrap s
 - Enforce permissions and server/instance scopes
 - Expose an OpenAPI REST API
 - Dispatch the same typed commands used by in-game `/admin` chat
-- Resolve global player presence through Coordinator
+- Read instance heartbeats and observed connection counts from Coordinator
+- Resolve unique global player presence through Coordinator (planned)
 - Execute kick, ban, message, move, teleport, drain and transfer workflows
 - Record append-only audit events
 - Expose authorized cluster, service, host, agent and instance status endpoints
 - Expose registered-account, character, online-player and player-statistics summaries
 
-Player counts distinguish accounts, characters and active sessions. Online counts come from fresh Coordinator presence leases; Redis is only an acceleration/cache layer. The current LibreLancer statistics are imported as mission, visit and ship-class kill counters. PvP, deaths, assists and damage require the optional authoritative server event sink described in the cluster plan.
+The `/admin status` summary reports LLServer connection counts from fresh Coordinator heartbeats and shows how many scoped instances contributed. It does not deduplicate accounts or characters, so it is not a unique online-player count. The planned player-statistics views must distinguish accounts, characters and active sessions; Redis may accelerate presence reads but is not authoritative storage. The current LibreLancer statistics are imported as mission, visit and ship-class kill counters. PvP, deaths, assists and damage require the optional authoritative server event sink described in the cluster plan.
 
 ## Status API
 
@@ -61,7 +62,7 @@ Existing status-query accounts use the normal node model: grant the needed `admi
 
 Each request, including retries, reads current rights. Status is withheld if durable audit fails. Account-scoped idempotency keys bind to command kind and target; reuse for another command returns 409. Repeated reads recompute fresh scoped data and append new audit events. Audit stores account/correlation/source/command/target/outcome, never credentials, raw chat or result payloads. Missing sources fail closed.
 
-Registry results omit private endpoints and account identities. Heartbeats older than 15 seconds, future timestamps or offline Agents prevent readiness. Multi-system capacity is counted once. Connection counts are distinct from unique online players; online presence remains unknown. Responses include timestamps and no-store headers. Gateway limits admin queries to 60/minute/source IP; LLServer allows one outstanding query/player with a two-second cooldown. Kick, ban, drain, move and teleport workflows remain unimplemented and are rejected.
+Registry results omit private endpoints and account identities. Heartbeats older than 15 seconds, future timestamps or offline Agents prevent readiness. Status counts each multi-system instance once and sums connections only from instances with fresh Coordinator heartbeats; it reports freshness coverage and says unique online accounts/characters remain unknown. Responses include timestamps and no-store headers. Gateway limits admin queries to 60/minute/source IP; LLServer allows one outstanding query/player with a two-second cooldown. Kick, ban, drain, move and teleport workflows remain unimplemented and are rejected.
 
 ### Configuration
 
